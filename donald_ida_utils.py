@@ -8,6 +8,9 @@ import idaapi
 import ida_xref
 import ida_search
 import ida_hexrays
+import ida_kernwin
+import ida_idaapi
+
 
 
 DEFAULT_PREFIX = "Decrypted: "
@@ -112,98 +115,46 @@ def find_references_to(ea) -> List[int]:
     return refs
 
 
-# Main function to iterate over the lines of the function and decrypt strings
-def decrypt_strings_in_function(func_start):
-    # Get the function end address
-    func_end = idc.get_func_attr(func_start, idc.FUNCATTR_END)
+def open_synced_disassembly_view():
+    # Get active view title
+    pseudocode_view = ida_kernwin.get_current_viewer()
+    pseudocode_view_title = ida_kernwin.get_widget_title(pseudocode_view)
 
-    addresses = []
+    # Open disassembly view
+    disasm_view_title = f"Synced Disasm ({pseudocode_view_title})"
+    disasm_view = ida_kernwin.open_disasm_window(disasm_view_title)
 
-    # Iterate over the function instructions
-    current_addr = func_start
-    while current_addr < func_end:
-        disasm_line = idc.GetDisasm(current_addr)
+    # Set disassembly view to text view
+    ida_kernwin.set_view_renderer_type(disasm_view, ida_kernwin.TCCRT_FLAT)
 
-        # Check if the instruction references an offset
-        if "offset" in disasm_line or ("mov" in disasm_line and "edx" in disasm_line and disasm_line.endswith("h")):
-            # Get the encrypted string address
-            if "offset" in disasm_line:
-                str_name = disasm_line.split()[3]
-                str_name = str_name.strip(";")
-                str_addr = idc.get_name_ea_simple(str_name)
-                addresses.append(str_addr)
-            else:
-                str_addr = int(disasm_line.split()[-1][:-1], base=16)
-                addresses.append(str_addr)
+    # Sync the disassembly view to the pseudocode view
+    what = ida_kernwin.sync_source_t(disasm_view)
+    _with = ida_kernwin.sync_source_t(pseudocode_view)
+    ida_kernwin.sync_sources(what, _with, True)
 
-        current_addr = idaapi.next_head(current_addr, func_end)
-
-    addresses = list(set(addresses))
-
-    for str_addr in addresses:
-        str_addr_ptr = str_addr
-
-        # Get view of addresses except this one
-        other_addresses = [x for x in addresses if x != str_addr]
-
-        # Calculate the maximum length this string can be
-        max_length = 2356267356289636892736
-        for other_address in other_addresses:
-            if other_address < str_addr:
-                continue
-
-            length = other_address - str_addr
-
-            if length < max_length:
-                max_length = length
-
-        # Read the string and apply XOR key ourselves
-        char = 0
-        char_dec = 0x1245
-        str_buf = []
-        while char_dec != 0 and len(str_buf) < max_length:
-
-            char = ord(idc.get_bytes(str_addr_ptr, 1))
-            char_dec = char ^ 0x19
-
-            if char_dec < 0x1f and char_dec != 0x00:
-                char_dec = char_dec ^ 0x20
-
-            str_buf.append(char_dec)
-            str_addr_ptr += 1
-
-        string = "".join(bytearray(str_buf).decode(encoding="ascii")).swapcase()
-        string.strip("\x00")
-        string = string.replace('\x00', "")
-
-        # Add comments
-        idc.set_cmt(str_addr, string, False)
-
-        refs = find_references_to(str_addr)
-
-        for ref_ea in refs:
-            add_pseudocode_comment(ref_ea, string)
+    # Dock the disassembly view to the right of the pseudocode view
+    ida_kernwin.set_dock_pos(pseudocode_view_title, disasm_view_title, ida_kernwin.WOPN_DP_RIGHT)
 
 
-# Example usage:
-if __name__ == "__main__":
-    print("------------------------")
-    eh = flare_emu.EmuHelper()
 
-    testing = False
+class DummyPlugin(ida_idaapi.plugin_t):
+    """Dummy plugin to make IDA stop complaining when this file is in the plugins folder."""
+    
+    # These fields are necessary for whatever reason
+    flags = ida_idaapi.PLUGIN_UNL
+    comment = "Dummy Plugin"
+    help = ""
+    wanted_name = "Dummy Plugin"
+    wanted_hotkey = ""
 
-    if testing:
-        function_address = eh.analysisHelper.getNameAddr("decrypt_strings_in_memory")
-        func = idaapi.get_func(function_address)
-        cfunc = idaapi.decompile(func)
-        print(cfunc.user_cmts)
-        for item in cfunc.user_cmts.items():
-            print(hex(item[0].ea), item[0].itp, item[1])
-    else:
-        function_address = eh.analysisHelper.getNameAddr("decrypt_strings_in_memory")
+    def init(self):
+        return ida_idaapi.PLUGIN_UNL
 
-        # XOR key used to decrypt the strings
-        xor_key = 0x19  # Replace this with the actual XOR key value
+    def run(self, args):
+        pass
 
-        # Decrypt strings in the function
-        decrypt_strings_in_function(function_address)
+    def term(self):
+        pass
+
+def PLUGIN_ENTRY():
+    return DummyPlugin()
