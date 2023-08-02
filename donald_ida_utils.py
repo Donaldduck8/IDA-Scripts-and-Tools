@@ -1,8 +1,6 @@
 from __future__ import print_function
 import re
 from typing import List
-import flare_emu
-import idc
 import idautils
 import idaapi
 import ida_xref
@@ -10,7 +8,6 @@ import ida_search
 import ida_hexrays
 import ida_kernwin
 import ida_idaapi
-
 
 
 DEFAULT_PREFIX = "Decrypted: "
@@ -134,7 +131,7 @@ def open_synced_disassembly_view():
 
     # Dock the disassembly view to the right of the pseudocode view
     ida_kernwin.set_dock_pos(pseudocode_view_title, disasm_view_title, ida_kernwin.WOPN_DP_RIGHT)
-
+    
 
 
 class DummyPlugin(ida_idaapi.plugin_t):
