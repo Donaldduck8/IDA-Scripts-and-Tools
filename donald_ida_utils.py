@@ -1,13 +1,25 @@
-from __future__ import print_function
 import re
-from typing import List
-import idautils
+import envi
 import idaapi
+import ida_ida
+import idautils
+import ida_name
 import ida_xref
+import ida_idaapi
 import ida_search
 import ida_hexrays
 import ida_kernwin
-import ida_idaapi
+
+import floss.main
+import floss.const
+import floss.strings
+import floss.utils
+import floss.tightstrings
+import floss.string_decoder
+import floss.decoding_manager
+import viv_utils.idaloader
+
+from typing import List
 
 
 DEFAULT_PREFIX = "Decrypted: "
@@ -37,7 +49,17 @@ def get_all_instructions_in_line(ida_cfunc, ea) -> List[int]:
     return insn_eas
 
 
-def add_pseudocode_comment(ea, comment, prefix=DEFAULT_PREFIX, quoted=True, sanitize=False, add_to_existing=True) -> None:
+def get_name_for_address(ea, ref_addr=None):
+    if ref_addr == None:
+        ref_addr = ida_idaapi.BADADDR
+    name = ida_name.get_ea_name(ea, ida_name.calc_gtn_flags(ref_addr, ea))
+    if not name:
+        name = hex(ea)
+
+    return name
+
+
+def add_pseudocode_comment(ea, comment, prefix=DEFAULT_PREFIX, quoted=True, sanitize=True, add_to_existing=True) -> None:
     """Add comment to the line of pseudocode that corresponds to the provided address."""
     ida_func = idaapi.get_func(ea)
 
@@ -131,7 +153,105 @@ def open_synced_disassembly_view():
 
     # Dock the disassembly view to the right of the pseudocode view
     ida_kernwin.set_dock_pos(pseudocode_view_title, disasm_view_title, ida_kernwin.WOPN_DP_RIGHT)
+
+
+def monkey_patch_flare_floss():
+    # Bypass FLOSS magic check
+    def return_true():
+        return True
+
+    floss.main.is_supported_file_type = return_true
+
+    # Add ELF files to viv-utils
+    def is_elf():
+        inf = idaapi.get_inf_structure()
+
+        return inf.filetype == ida_ida.f_ELF
+
+    original_is_exe_func = viv_utils.idaloader.is_exe
+    viv_utils.idaloader.is_exe = return_true
+
+    # Hook viv_utils.idaloader.loadWorkspaceFromIdb
+    original_load_workspace_from_idb_func = viv_utils.idaloader.loadWorkspaceFromIdb
+
+    def load_workspace_from_idb_hook():
+        vw = original_load_workspace_from_idb_func()
+
+        if original_is_exe_func():
+            vw.setMeta("Platform", "windows")
+            vw.setMeta("Format", "pe")
+        elif is_elf():
+            vw.setMeta("Platform", "unknown")
+            vw.setMeta("Format", "elf")
+        else:
+            raise NotImplementedError("unsupported filetype")
+        
+        return vw
+        
+    viv_utils.idaloader.loadWorkspaceFromIdb = load_workspace_from_idb_hook
+
+    # Change constants
+    # TODO: Make these configurable in IDA
+    DS_MAX_INSN_COUNT = 200000
+    DS_MAX_ADDRESS_REVISITS_EMULATION = 300000
+    TS_MAX_INSN_COUNT = 100000
+
+    floss.const.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
+    floss.string_decoder.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
+
+    # Goofy ahh python storing kwarg defaults :skull:
+    d1, d2, d3 = floss.string_decoder.decode_strings.__defaults__
+    floss.string_decoder.decode_strings.__defaults__ = (DS_MAX_INSN_COUNT, d2, d3)
+
+    floss.const.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+    floss.decoding_manager.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+    floss.tightstrings.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+
+    floss.const.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
+    floss.tightstrings.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
+
+    # Allow \r and \n in ASCII strings
+    if rb"\r" not in floss.strings.ASCII_BYTE:
+        floss.strings.ASCII_BYTE += rb"\r"
+
+    if rb"\n" not in floss.strings.ASCII_BYTE:
+        floss.strings.ASCII_BYTE += rb"\n"
+
+    floss.strings.ASCII_RE_4 = re.compile(rb"([%s]{%d,})" % (floss.strings.ASCII_BYTE, 4))
+    floss.strings.UNICODE_RE_4 = re.compile(rb"((?:[%s]\x00){%d,})" % (floss.strings.ASCII_BYTE, 4))
+
+    # Do not split strings by \r or \n
+    def get_referenced_strings_patch(vw, fva):
+        # modified from capa
+        f: viv_utils.Function = viv_utils.Function(vw, fva)
+        strings = set()
+        for bb in f.basic_blocks:
+            for insn in bb.instructions:
+                for i, oper in enumerate(insn.opers):
+                    if isinstance(oper, envi.archs.i386.disasm.i386ImmOper):
+                        v = oper.getOperValue(oper)
+                    elif isinstance(oper, envi.archs.i386.disasm.i386ImmMemOper):
+                        # like 0x10056CB4 in `lea eax, dword [0x10056CB4]`
+                        v = oper.imm
+                    elif isinstance(oper, envi.archs.i386.disasm.i386SibOper):
+                        # like 0x401000 in `mov eax, 0x401000[2 * ebx]`
+                        v = oper.imm
+                    elif isinstance(oper, envi.archs.amd64.disasm.Amd64RipRelOper):
+                        v = oper.getOperAddr(insn)
+                    else:
+                        continue
+
+                    for v in floss.utils.derefs(vw, v):
+                        try:
+                            s = floss.utils.read_string(vw, v)
+                        except ValueError:
+                            continue
+                        else:
+                            # Do not split strings by \r or \n
+                            strings.update([s.rstrip("\x00")])
+        return strings
     
+    floss.utils.get_referenced_strings = get_referenced_strings_patch
 
 
 class DummyPlugin(ida_idaapi.plugin_t):
@@ -155,3 +275,4 @@ class DummyPlugin(ida_idaapi.plugin_t):
 
 def PLUGIN_ENTRY():
     return DummyPlugin()
+
