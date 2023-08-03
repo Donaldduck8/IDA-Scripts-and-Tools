@@ -5,6 +5,8 @@ import floss_ida_script
 import idaapi
 import ida_ida
 
+import floss.const
+
 class OpenSyncedDisassemblyViewActionHandler(ida_kernwin.action_handler_t):
     """Action handler for opening a synchronized flat disassembly view."""
 
@@ -23,48 +25,76 @@ class FLOSSActionHandler(ida_kernwin.action_handler_t):
         ida_kernwin.action_handler_t.__init__(self)
 
     def activate(self, ctx):
-        # Hook floss.apply_stack_strings
-        apply_stack_strings_func = floss_ida_script.apply_stack_strings
+        f = floss_form_t()
+        f.Compile()
 
-        def apply_stack_strings_hook(stack_strings, tight_strings, lvar_cmt = True, cmt = True) -> None:
-            apply_stack_strings_func(stack_strings, tight_strings, lvar_cmt, cmt)
-            strings = stack_strings + tight_strings
+        # Populate fields with current settings
+        f.iMIN_STRING_LENGTH.value = floss.const.MIN_STRING_LENGTH
+        f.iMAX_STRING_LENGTH.value = floss.const.MAX_STRING_LENGTH
+        f.iDS_MAX_ADDRESS_REVISITS_EMULATION.value = floss.const.DS_MAX_ADDRESS_REVISITS_EMULATION
+        f.iDS_MAX_INSN_COUNT.value = floss.const.DS_MAX_INSN_COUNT
+        f.iTS_MAX_INSN_COUNT.value = floss.const.TS_MAX_INSN_COUNT
 
-            for s in strings:
-                if not s.string:
-                    continue
+        ok = f.Execute()
 
-                donald_ida_utils.add_pseudocode_comment(s.program_counter, s.string)
+        if ok == 1:
+            donald_ida_utils.monkey_patch_flare_floss_constants(
+                MAX_STRING_LENGTH = f.iMAX_STRING_LENGTH.value,
+                DS_MAX_INSN_COUNT = f.iDS_MAX_INSN_COUNT.value,
+                DS_MAX_ADDRESS_REVISITS_EMULATION = f.iDS_MAX_ADDRESS_REVISITS_EMULATION.value,
+                TS_MAX_INSN_COUNT = f.iTS_MAX_INSN_COUNT.value
+            )
 
-        floss_ida_script.apply_stack_strings = apply_stack_strings_hook
+            # This monkey patch won't do anything for execution
+            # But I'll do it so the next time the form is opened, the value is persisted
+            floss.const.MIN_STRING_LENGTH = f.iMIN_STRING_LENGTH.value
+            floss_ida_script.MIN_LENGTH = f.iMIN_STRING_LENGTH.value
 
-        # Hook floss.apply_decoded_strings
-        apply_decoded_strings_func = floss_ida_script.apply_decoded_strings
-
-        def apply_decoded_strings_hook(decoded_strings) -> None:
-            apply_decoded_strings_func(decoded_strings)
-
-            for ds in decoded_strings:
-                for ref_addr in donald_ida_utils.find_references_to(ds.address):
-                    try:
-                        var_name = donald_ida_utils.get_name_for_address(ds.address, ref_addr)
-                    except:
-                        var_name = "Decrypted"
-                    donald_ida_utils.add_pseudocode_comment(ref_addr, ds.string, prefix=var_name + ": ")
-
-        floss_ida_script.apply_decoded_strings = apply_decoded_strings_hook
-
-        floss_ida_script.main()
+            undo = donald_ida_utils.hook_floss_comments()
+            try:
+                floss_ida_script.main()
+            finally:
+                undo()
 
     def update(self, ctx):
         return ida_kernwin.AST_ENABLE_FOR_IDB
+    
+
+class floss_form_t(ida_kernwin.Form):
+    def __init__(self):
+        self.invert = False
+        F = ida_kernwin.Form
+        F.__init__(
+            self,
+            """STARTITEM 0
+BUTTON YES* Start
+BUTTON CANCEL Cancel
+FLOSS Parameters
+
+<##Minimum string length                  :{iMIN_STRING_LENGTH}>
+<##Maximum string length                  :{iMAX_STRING_LENGTH}>
+<##Address revisits per function          :{iDS_MAX_ADDRESS_REVISITS_EMULATION}>
+<##Instructions to emulate per function   :{iDS_MAX_INSN_COUNT}>
+<##Instructions to emulate in a tight loop:{iTS_MAX_INSN_COUNT}>
+""",
+            {
+                "iMIN_STRING_LENGTH": F.NumericInput(tp=F.FT_DEC),
+                "iMAX_STRING_LENGTH": F.NumericInput(tp=F.FT_DEC),
+                "iDS_MAX_ADDRESS_REVISITS_EMULATION": F.NumericInput(tp=F.FT_DEC),
+                "iDS_MAX_INSN_COUNT": F.NumericInput(tp=F.FT_DEC),
+                "iTS_MAX_INSN_COUNT": F.NumericInput(tp=F.FT_DEC)
+            }
+        )
+
+    def OnFormChange(self, fid):
+        pass
     
 
 class DonaldPlugin(ida_idaapi.plugin_t):
     """IDA Plugin to integrate my personal tools into the UI."""
 
     # These fields are necessary for whatever reason
-    flags = ida_idaapi.PLUGIN_UNL
+    flags = ida_idaapi.PLUGIN_KEEP
     comment = "Donald's IDA Tools Plugin"
     help = ""
     wanted_name = "Donald's Plugin"
@@ -130,6 +160,7 @@ class DonaldPlugin(ida_idaapi.plugin_t):
 
 def PLUGIN_ENTRY():
     donald_ida_utils.monkey_patch_flare_floss()
+    donald_ida_utils.monkey_patch_flare_floss_constants_default()
     return DonaldPlugin()
 
 if __name__ == "__main__":

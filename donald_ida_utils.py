@@ -9,14 +9,16 @@ import ida_idaapi
 import ida_search
 import ida_hexrays
 import ida_kernwin
+import floss_ida_script
 
 import floss.main
 import floss.const
-import floss.strings
 import floss.utils
+import floss.strings
 import floss.tightstrings
 import floss.string_decoder
 import floss.decoding_manager
+import floss.features.extract
 import viv_utils.idaloader
 
 from typing import List
@@ -155,6 +157,66 @@ def open_synced_disassembly_view():
     ida_kernwin.set_dock_pos(pseudocode_view_title, disasm_view_title, ida_kernwin.WOPN_DP_RIGHT)
 
 
+def monkey_patch_flare_floss_constants(MAX_STRING_LENGTH = None,
+                                       DS_MAX_INSN_COUNT = None, 
+                                       DS_MAX_ADDRESS_REVISITS_EMULATION = None,
+                                       DS_FUNCTION_MIN_DECODED_STRINGS = None,
+                                       DS_FUNCTION_CALLS_RARE = None,
+                                       DS_FUNCTION_CALLS_OFTEN = None,
+                                       DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = None,
+                                       TS_MAX_INSN_COUNT = None,
+                                       TS_TIGHT_FUNCTION_MAX_BLOCKS = None,
+                                       ):
+    if MAX_STRING_LENGTH:
+        floss.const.MAX_STRING_LENGTH = MAX_STRING_LENGTH
+        floss.utils.MAX_STRING_LENGTH = MAX_STRING_LENGTH
+
+    if DS_MAX_INSN_COUNT:
+        floss.const.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
+        floss.string_decoder.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
+
+        # Goofy ahh python storing kwarg defaults :skull:
+        d1, d2, d3 = floss.string_decoder.decode_strings.__defaults__
+        floss.string_decoder.decode_strings.__defaults__ = (DS_MAX_INSN_COUNT, d2, d3)
+
+    if DS_MAX_ADDRESS_REVISITS_EMULATION:
+        floss.const.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+        floss.decoding_manager.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+        floss.tightstrings.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
+
+    if DS_FUNCTION_MIN_DECODED_STRINGS:
+        floss.const.DS_FUNCTION_MIN_DECODED_STRINGS = DS_FUNCTION_MIN_DECODED_STRINGS
+        floss.string_decoder.DS_FUNCTION_MIN_DECODED_STRINGS = DS_FUNCTION_MIN_DECODED_STRINGS
+
+    if DS_FUNCTION_CALLS_RARE:
+        floss.const.DS_FUNCTION_CALLS_RARE = DS_FUNCTION_CALLS_RARE
+        floss.string_decoder.DS_FUNCTION_CALLS_RARE = DS_FUNCTION_CALLS_RARE
+
+    if DS_FUNCTION_CALLS_OFTEN:
+        floss.const.DS_FUNCTION_CALLS_OFTEN = DS_FUNCTION_CALLS_OFTEN
+        floss.string_decoder.DS_FUNCTION_CALLS_OFTEN = DS_FUNCTION_CALLS_OFTEN
+
+    if DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN:
+        floss.const.DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN
+        floss.string_decoder.DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN
+
+    if TS_TIGHT_FUNCTION_MAX_BLOCKS:
+        floss.const.TS_TIGHT_FUNCTION_MAX_BLOCKS = TS_TIGHT_FUNCTION_MAX_BLOCKS
+        floss.features.extract.TS_TIGHT_FUNCTION_MAX_BLOCKS = TS_TIGHT_FUNCTION_MAX_BLOCKS
+
+    if TS_MAX_INSN_COUNT:
+        floss.const.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
+        floss.tightstrings.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
+
+
+def monkey_patch_flare_floss_constants_default():
+    monkey_patch_flare_floss_constants(
+        DS_MAX_INSN_COUNT = 200000,
+        DS_MAX_ADDRESS_REVISITS_EMULATION = 30000,
+        TS_MAX_INSN_COUNT = 100000
+    )
+
+
 def monkey_patch_flare_floss():
     # Bypass FLOSS magic check
     def return_true():
@@ -189,26 +251,6 @@ def monkey_patch_flare_floss():
         return vw
         
     viv_utils.idaloader.loadWorkspaceFromIdb = load_workspace_from_idb_hook
-
-    # Change constants
-    # TODO: Make these configurable in IDA
-    DS_MAX_INSN_COUNT = 200000
-    DS_MAX_ADDRESS_REVISITS_EMULATION = 300000
-    TS_MAX_INSN_COUNT = 100000
-
-    floss.const.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
-    floss.string_decoder.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
-
-    # Goofy ahh python storing kwarg defaults :skull:
-    d1, d2, d3 = floss.string_decoder.decode_strings.__defaults__
-    floss.string_decoder.decode_strings.__defaults__ = (DS_MAX_INSN_COUNT, d2, d3)
-
-    floss.const.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-    floss.decoding_manager.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-    floss.tightstrings.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-
-    floss.const.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
-    floss.tightstrings.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
 
     # Allow \r and \n in ASCII strings
     if rb"\r" not in floss.strings.ASCII_BYTE:
@@ -252,6 +294,45 @@ def monkey_patch_flare_floss():
         return strings
     
     floss.utils.get_referenced_strings = get_referenced_strings_patch
+
+
+def hook_floss_comments():
+    # Hook floss.apply_stack_strings
+    apply_stack_strings_func = floss_ida_script.apply_stack_strings
+
+    def apply_stack_strings_hook(stack_strings, tight_strings, lvar_cmt = True, cmt = True) -> None:
+        apply_stack_strings_func(stack_strings, tight_strings, lvar_cmt, cmt)
+        strings = stack_strings + tight_strings
+
+        for s in strings:
+            if not s.string:
+                continue
+
+            add_pseudocode_comment(s.program_counter, s.string)
+
+    floss_ida_script.apply_stack_strings = apply_stack_strings_hook
+
+    # Hook floss.apply_decoded_strings
+    apply_decoded_strings_func = floss_ida_script.apply_decoded_strings
+
+    def apply_decoded_strings_hook(decoded_strings) -> None:
+        apply_decoded_strings_func(decoded_strings)
+
+        for ds in decoded_strings:
+            for ref_addr in find_references_to(ds.address):
+                try:
+                    var_name = get_name_for_address(ds.address, ref_addr)
+                except:
+                    var_name = "Decrypted"
+                add_pseudocode_comment(ref_addr, ds.string, prefix=var_name + ": ")
+
+    floss_ida_script.apply_decoded_strings = apply_decoded_strings_hook
+
+    def undo():
+        floss_ida_script.apply_stack_strings = apply_stack_strings_func
+        floss_ida_script.apply_decoded_strings = apply_decoded_strings_func
+
+    return undo
 
 
 class DummyPlugin(ida_idaapi.plugin_t):
