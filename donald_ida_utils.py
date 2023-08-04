@@ -308,7 +308,7 @@ def hook_floss_comments():
             if not s.string:
                 continue
 
-            add_pseudocode_comment(s.program_counter, s.string)
+            add_pseudocode_comment(s.program_counter, s.string, prefix="[FLOSS]: ")
 
     floss_ida_script.apply_stack_strings = apply_stack_strings_hook
 
@@ -324,7 +324,7 @@ def hook_floss_comments():
                     var_name = get_name_for_address(ds.address, ref_addr)
                 except:
                     var_name = "Decrypted"
-                add_pseudocode_comment(ref_addr, ds.string, prefix=var_name + ": ")
+                add_pseudocode_comment(ref_addr, ds.string, prefix=f"[FLOSS] {var_name}: ")
 
     floss_ida_script.apply_decoded_strings = apply_decoded_strings_hook
 
