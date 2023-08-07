@@ -1,7 +1,11 @@
 import ida_name
 import flare_emu
 import ida_idaapi
+import ida_lines
+import ida_moves
 import ida_kernwin
+import ida_hexrays
+import idaapi
 
 import floss.const
 import floss.strings
@@ -12,6 +16,8 @@ MEM_WRITE_ADDRESSES = []
 
 MIN_STRING_LENGTH = 4
 MAX_STRING_LENGTH = 2048
+
+ADDRESS_RANGES = []
 
 
 def find_continuous_ranges(nums):
@@ -107,6 +113,7 @@ class FLAREEMUActionHandler(ida_kernwin.action_handler_t):
 
 
     def update(self, ctx):
+        # TODO: You can use the context to check for selection
         return ida_kernwin.AST_ENABLE_FOR_IDB
     
 
@@ -132,6 +139,7 @@ FLARE Emulate Parameters
                 "iEND_ADDRESS": F.NumericInput(tp=F.FT_ADDR),
                 "iMIN_STRING_LENGTH": F.NumericInput(tp=F.FT_DEC),
                 "iMAX_STRING_LENGTH": F.NumericInput(tp=F.FT_DEC),
+
             }
         )
 
@@ -183,8 +191,252 @@ class FLAREEmuPlugin(ida_idaapi.plugin_t):
             ida_kernwin.unregister_action(action.name)
 
 
+class pseudo_line_t(object):
+    def __init__(self, func_ea, line_nr):
+        self.func_ea = func_ea
+        self.line_nr = line_nr
+
+    def __hash__(self):
+        return hash((self.func_ea, self.line_nr))
+
+    def __eq__(self, r):
+        return self.func_ea == r.func_ea \
+            and self.line_nr == r.line_nr
+
+
+def _place_to_line_number(p):
+    return ida_kernwin.place_t.as_simpleline_place_t(p).n
+
+
+class pseudocode_lines_rendering_hooks_t(ida_kernwin.UI_Hooks):
+    def __init__(self):
+        ida_kernwin.UI_Hooks.__init__(self)
+        self.marked_lines = {}
+
+    def get_lines_rendering_info(self, out, widget, rin):
+        vu = ida_hexrays.get_widget_vdui(widget)
+        if vu:
+            entry_ea = vu.cfunc.entry_ea
+            for section_lines in rin.sections_lines:
+                for line in section_lines:
+                    coord = pseudo_line_t(
+                        entry_ea,
+                        _place_to_line_number(line.at))
+                    color = self.marked_lines.get(coord, None)
+                    if color is not None:
+                        e = ida_kernwin.line_rendering_output_entry_t(line)
+                        e.bg_color = color
+                        out.entries.push_back(e)
+
+
+class mycv_t(ida_kernwin.simplecustviewer_t):
+    def Create(self, address_ranges):
+        self.address_ranges = address_ranges
+        # Form the title
+        title = "FLARE Emulate Pipeline"
+
+        active_view = ida_kernwin.get_current_viewer()
+        active_view_title = ida_kernwin.get_widget_title(active_view)
+
+        if "Pseudocode" not in active_view_title:
+            active_view = ida_hexrays.open_pseudocode(0, ida_hexrays.OPF_NEW_WINDOW)
+            active_view_title = ida_kernwin.get_widget_title(active_view)
+
+        self.pseudocode_view = active_view
+
+        # Create the customviewer
+        if not ida_kernwin.simplecustviewer_t.Create(self, title):
+            return False
+
+        for i, address_range in enumerate(address_ranges):
+            self.AddLine(f"{i}: {address_range[0]} - {address_range[1]}")
+
+        self.Show()
+
+        ida_kernwin.set_dock_pos(title, active_view_title, ida_kernwin.WOPN_DP_RIGHT)
+        ida_kernwin.activate_widget(active_view, True)
+
+        disasm_view_title = f"Synced Disasm ({active_view_title})"
+        disasm_view = ida_kernwin.open_disasm_window(disasm_view_title)
+        ida_kernwin.set_view_renderer_type(disasm_view, ida_kernwin.TCCRT_FLAT)
+        what = ida_kernwin.sync_source_t(disasm_view)
+        _with = ida_kernwin.sync_source_t(active_view)
+        ida_kernwin.sync_sources(what, _with, True)
+        ida_kernwin.set_dock_pos(active_view_title, disasm_view_title, ida_kernwin.WOPN_DP_LEFT)
+
+        self.disasm_view = disasm_view
+
+        return True
+
+    def OnClick(self, shift):
+        """
+        User clicked in the view
+        @param shift: Shift flag
+        @return: Boolean. True if you handled the event
+        """
+        loc = ida_moves.lochist_entry_t()
+        ida_kernwin.get_custom_viewer_location(loc, self.GetWidget())
+        line_number = _place_to_line_number(loc.place())
+
+        selected_address = self.address_ranges[line_number][0]
+
+        ida_kernwin.jumpto(selected_address, -1, ida_kernwin.UIJMP_IDAVIEW)
+
+        
+
+        # Unmark all lines -> Line -> Address Range -> Move code views to range -> Mark all lines
+        print("OnClick, shift=%d" % shift)
+        return True
+
+    def OnDblClick(self, shift):
+        """
+        User dbl-clicked in the view
+        @param shift: Shift flag
+        @return: Boolean. True if you handled the event
+        """
+        word = self.GetCurrentWord()
+        if not word: word = "<None>"
+        print("OnDblClick, shift=%d, current word=%s" % (shift, word))
+        return True
+
+    def OnCursorPosChanged(self):
+        """
+        Cursor position changed.
+        @return: Nothing
+        """
+        print("OnCurposChanged")
+
+    def OnClose(self):
+        """
+        The view is closing. Use this event to cleanup.
+        @return: Nothing
+        """
+        print("OnClose " + self.title)
+
+    def OnKeydown(self, vkey, shift):
+        """
+        User pressed a key
+        @param vkey: Virtual key code
+        @param shift: Shift flag
+        @return: Boolean. True if you handled the event
+        """
+        print("OnKeydown, vk=%d shift=%d" % (vkey, shift))
+        # ESCAPE?
+        if vkey == 27:
+            self.Close()
+        # VK_DELETE
+        elif vkey == 46:
+            n = self.GetLineNo()
+            if n is not None:
+                self.DelLine(n)
+                self.Refresh()
+                print("Deleted line %d" % n)
+        # Goto?
+        elif vkey == ord('G'):
+            n = self.GetLineNo()
+            if n is not None:
+                v = ida_kernwin.ask_long(self.GetLineNo(), "Where to go?")
+                if v:
+                    self.Jump(v, 0, 5)
+        elif vkey == ord('R'):
+            print("refreshing....")
+            self.Refresh()
+        elif vkey == ord('C'):
+            print("refreshing current line...")
+            self.RefreshCurrent()
+        elif vkey == ord('A'):
+            s = ida_kernwin.ask_str("NewLine%d" % self.Count(), 0, "Append new line")
+            self.AddLine(s)
+            self.Refresh()
+        elif vkey == ord('X'):
+            print("Clearing all lines")
+            self.ClearLines()
+            self.Refresh()
+        elif vkey == ord('I'):
+            n = self.GetLineNo()
+            s = ida_kernwin.ask_str("InsertedLine%d" % n, 0, "Insert new line")
+            self.InsertLine(n, s)
+            self.Refresh()
+        elif vkey == ord('E'):
+            l = self.GetCurrentLine(notags=1)
+            if not l:
+                return False
+            n = self.GetLineNo()
+            print("curline=<%s>" % l)
+            l = l + ida_lines.COLSTR("*", ida_lines.SCOLOR_VOIDOP)
+            self.EditLine(n, l)
+            self.RefreshCurrent()
+            print("Edited line %d" % n)
+        else:
+            return False
+        return True
+
+    def OnHint(self, lineno):
+        """
+        Hint requested for the given line number.
+        @param lineno: The line number (zero based)
+        @return:
+            - tuple(number of important lines, hint string)
+            - None: if no hint available
+        """
+        return (1, "OnHint, line=%d" % lineno)
+
+    def Show(self, *args):
+        ok = ida_kernwin.simplecustviewer_t.Show(self, *args)
+        if ok:
+            pass
+            # permanently attach actions to this viewer's popup menu
+            #for av in actions_variants:
+            #    actname = say_something_handler_t.compose_action_name(av)
+            #    ida_kernwin.attach_action_to_popup(self.GetWidget(), None, actname)
+        return ok
+
+
 def PLUGIN_ENTRY():
     return FLAREEmuPlugin()
 
+
+def get_decompile_coord_by_ea(cfunc, addr):
+    if idaapi.IDA_SDK_VERSION >= 720:
+        item = cfunc.body.find_closest_addr(addr)
+        y_holder = idaapi.int_pointer()
+        if not cfunc.find_item_coords(item, None, y_holder):
+            return None
+        y = y_holder.value()
+    else:
+        lnmap = {}
+        for i, line in enumerate(cfunc.pseudocode):
+            phead = idaapi.ctree_item_t()
+            pitem = idaapi.ctree_item_t()
+            ptail = idaapi.ctree_item_t()
+            ret = cfunc.get_line_item(line.line, 0, True, phead, pitem, ptail)
+            if ret and pitem.it:
+                lnmap[pitem.it.ea] = i
+        y = None
+        closest_ea = ida_idaapi.BADADDR
+        for ea,line in lnmap.items():
+            if closest_ea == ida_idaapi.BADADDR or abs(closest_ea - addr) > abs(ea - addr):
+                closest_ea = ea
+                y = lnmap[ea]
+
+    return y
+
+
 if __name__ == "__main__":
-    pass
+    pseudocode_view = ida_kernwin.get_current_viewer()
+    selection_exists, start_addr, end_addr = ida_kernwin.read_range_selection(pseudocode_view)
+
+    ida_func = idaapi.get_func(start_addr)
+    ida_cfunc = idaapi.decompile(ida_func)
+    insn_ea = ida_cfunc.eamap[start_addr][0].ea
+
+    x = get_decompile_coord_by_ea(ida_cfunc, insn_ea)
+
+    address_ranges = [(start_addr, end_addr)] * 8
+
+    x = mycv_t()
+    if not x.Create(address_ranges):
+        print("Failed to create!")
+        # return None
+    # x.Show()
+    tcc = x.GetWidget()
