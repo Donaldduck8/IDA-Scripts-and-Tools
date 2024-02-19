@@ -14,16 +14,21 @@ You will need to perform the following extra steps:
 ### Synchronized Disassembly View 
 
 Pressing ``Ctrl+4`` will open a disassembly view, synchronized to your active view, and will dock it to the right.
+
 ![Synchronized Disassembly View](/img/synced_disasm_view.png)
 
-### [FLOSS](https://github.com/mandiant/flare-floss)-IDA integration
-> WARNING: This plugin monkey-patches the ``floss`` and ``viv-utils`` libraries. FLOSS relies on the ``vivisect`` library to navigate the binaries it analyses and from what I can see, there is no lack of support for non-PE binaries there.
->
-> Instead, ``floss`` and ``viv-utils`` explicitly check for PE files and will stop analysis otherwise. This plugin circumvents those checks and forces FLOSS to analyse ELF binaries. I have only personally confirmed FLOSS to provide good results during analysis of the following LockBit ESXi/Linux sample: ``40b2724e08232e2a46f3ee36e9b0e5ee2bb49e81570abeb28035adc71db8ac99``
+### Dump Bytes
 
-Under ``Edit -> Other -> FLOSS`` you will find the integrated FLOSS script. Activating it will open a window where you can customize the constants FLOSS will use during analysis.
+Pressing ``Ctrl+M`` will open a byte-dumping dialog that allows you to easily extract embedded blobs from your binaries.
 
-![FLOSS Options](/img/floss_options.png)
+![Dump Bytes Dialog](/img/dump_bytes.png)
 
-This plugin will automatically add pseudocode comments for strings that FLOSS was able to decrypt:
-![FLOSS Pseudocode Comments](/img/floss_performance.png)
+### Better Annotator
+
+Pressing ``Ctrl+Shift+A`` will open a dialog that allows you to import decrypted string as a JSON object and use them to annotate your IDBs in various ways.
+
+- "Globals" will define globals at all addresses (keys) if they do not exist, and rename them to the values provided in your JSON object.
+- "Enum" will format an enum mapping all keys to the values provided in your JSON object, and print the formatted enum to the console.
+- "Comments" will place pseudocode-comments at all addresses (keys).
+
+![Better Annotator](/img/better_annotator.png)
