@@ -27,4 +27,8 @@ Pressing ``Ctrl+M`` will open a byte-dumping dialog that allows you to easily ex
 
 Pressing ``Ctrl+Shift+A`` will open a dialog that allows you to import decrypted string as a JSON object and use them to annotate your IDBs in various ways.
 
+- "Globals" will define globals at all addresses (keys) if they do not exist, and rename them to the values provided in your JSON object.
+- "Enum" will format an enum mapping all keys to the values provided in your JSON object, and print the formatted enum to the console.
+- "Comments" will place pseudocode-comments at all addresses (keys).
+
 ![Better Annotator](/img/better_annotator.png)
