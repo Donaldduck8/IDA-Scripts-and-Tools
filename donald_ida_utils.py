@@ -1,5 +1,6 @@
 import re
 import envi
+import idc
 import idaapi
 import ida_ida
 import idautils
@@ -9,22 +10,39 @@ import ida_idaapi
 import ida_search
 import ida_hexrays
 import ida_kernwin
-import floss_ida_script
-
-import floss.main
-import floss.const
-import floss.utils
-import floss.strings
-import floss.tightstrings
-import floss.string_decoder
-import floss.decoding_manager
-import floss.features.extract
-import viv_utils.idaloader
 
 from typing import List
 
 
 DEFAULT_PREFIX = "Decrypted: "
+
+
+import ida_bytes
+import ida_name
+import ida_ua
+
+def define_and_rename_global(addr, name, data_type=ida_ua.dt_dword):
+    """
+    Check if a global variable exists at the given address. If not, define one and then rename it.
+
+    :param addr: Address to check and define the global variable at.
+    :param name: New name for the global variable.
+    :param data_type: The data type to define at the address (default is dword).
+    """
+    # Check if the address is unknown (i.e., not defined)
+    if ida_bytes.is_unknown(ida_bytes.get_flags(addr)):
+        # Define the global variable at the address with the specified data type
+        if not ida_bytes.create_data(addr, data_type, ida_bytes.get_data_elsize(addr, data_type), ida_idaapi.BADADDR):
+            print(f"Failed to create data at address {hex(addr)}.")
+            return False
+        
+    # Rename the address to the specified name
+    if not ida_name.set_name(addr, name, ida_name.SN_CHECK):
+        print(f"Failed to rename address {hex(addr)} to {name}.")
+        return False
+
+    print(f"Successfully defined and renamed global at {hex(addr)} to {name}.")
+    return True
 
 
 def get_all_instructions_in_line(ida_cfunc, ea) -> List[int]:
@@ -112,6 +130,11 @@ def add_pseudocode_comment(ea, comment, prefix=DEFAULT_PREFIX, quoted=True, sani
     ida_cfunc.save_user_cmts()
 
 
+def add_disassembly_comment(ea, text):
+    ## Set in dissassembly
+    idc.set_cmt(ea, text,0)
+
+
 def find_references_to(ea) -> List[int]:
     """Find Xrefs and immediate references to an address."""
     refs = []
@@ -155,184 +178,6 @@ def open_synced_disassembly_view():
 
     # Dock the disassembly view to the right of the pseudocode view
     ida_kernwin.set_dock_pos(pseudocode_view_title, disasm_view_title, ida_kernwin.WOPN_DP_RIGHT)
-
-
-def monkey_patch_flare_floss_constants(MAX_STRING_LENGTH = None,
-                                       DS_MAX_INSN_COUNT = None, 
-                                       DS_MAX_ADDRESS_REVISITS_EMULATION = None,
-                                       DS_FUNCTION_MIN_DECODED_STRINGS = None,
-                                       DS_FUNCTION_CALLS_RARE = None,
-                                       DS_FUNCTION_CALLS_OFTEN = None,
-                                       DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = None,
-                                       TS_MAX_INSN_COUNT = None,
-                                       TS_TIGHT_FUNCTION_MAX_BLOCKS = None,
-                                       ):
-    if MAX_STRING_LENGTH:
-        floss.const.MAX_STRING_LENGTH = MAX_STRING_LENGTH
-        floss.utils.MAX_STRING_LENGTH = MAX_STRING_LENGTH
-
-    if DS_MAX_INSN_COUNT:
-        floss.const.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
-        floss.string_decoder.DS_MAX_INSN_COUNT = DS_MAX_INSN_COUNT
-
-        # Goofy ahh python storing kwarg defaults :skull:
-        d1, d2, d3 = floss.string_decoder.decode_strings.__defaults__
-        floss.string_decoder.decode_strings.__defaults__ = (DS_MAX_INSN_COUNT, d2, d3)
-
-    if DS_MAX_ADDRESS_REVISITS_EMULATION:
-        floss.const.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-        floss.decoding_manager.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-        floss.tightstrings.DS_MAX_ADDRESS_REVISITS_EMULATION = DS_MAX_ADDRESS_REVISITS_EMULATION
-
-    if DS_FUNCTION_MIN_DECODED_STRINGS:
-        floss.const.DS_FUNCTION_MIN_DECODED_STRINGS = DS_FUNCTION_MIN_DECODED_STRINGS
-        floss.string_decoder.DS_FUNCTION_MIN_DECODED_STRINGS = DS_FUNCTION_MIN_DECODED_STRINGS
-
-    if DS_FUNCTION_CALLS_RARE:
-        floss.const.DS_FUNCTION_CALLS_RARE = DS_FUNCTION_CALLS_RARE
-        floss.string_decoder.DS_FUNCTION_CALLS_RARE = DS_FUNCTION_CALLS_RARE
-
-    if DS_FUNCTION_CALLS_OFTEN:
-        floss.const.DS_FUNCTION_CALLS_OFTEN = DS_FUNCTION_CALLS_OFTEN
-        floss.string_decoder.DS_FUNCTION_CALLS_OFTEN = DS_FUNCTION_CALLS_OFTEN
-
-    if DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN:
-        floss.const.DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN
-        floss.string_decoder.DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN = DS_FUNCTION_SHORTCUT_THRESHOLD_VERY_OFTEN
-
-    if TS_TIGHT_FUNCTION_MAX_BLOCKS:
-        floss.const.TS_TIGHT_FUNCTION_MAX_BLOCKS = TS_TIGHT_FUNCTION_MAX_BLOCKS
-        floss.features.extract.TS_TIGHT_FUNCTION_MAX_BLOCKS = TS_TIGHT_FUNCTION_MAX_BLOCKS
-
-    if TS_MAX_INSN_COUNT:
-        floss.const.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
-        floss.tightstrings.TS_MAX_INSN_COUNT = TS_MAX_INSN_COUNT
-
-
-def monkey_patch_flare_floss_constants_default():
-    monkey_patch_flare_floss_constants(
-        DS_MAX_INSN_COUNT = 200000,
-        DS_MAX_ADDRESS_REVISITS_EMULATION = 30000,
-        TS_MAX_INSN_COUNT = 100000
-    )
-
-
-def monkey_patch_flare_floss():
-    # Bypass FLOSS magic check
-    def return_true():
-        return True
-
-    floss.main.is_supported_file_type = return_true
-
-    # Add ELF files to viv-utils
-    def is_elf():
-        inf = idaapi.get_inf_structure()
-
-        return inf.filetype == ida_ida.f_ELF
-
-    original_is_exe_func = viv_utils.idaloader.is_exe
-    viv_utils.idaloader.is_exe = return_true
-
-    # Hook viv_utils.idaloader.loadWorkspaceFromIdb
-    original_load_workspace_from_idb_func = viv_utils.idaloader.loadWorkspaceFromIdb
-
-    def load_workspace_from_idb_hook():
-        vw = original_load_workspace_from_idb_func()
-
-        if original_is_exe_func():
-            vw.setMeta("Platform", "windows")
-            vw.setMeta("Format", "pe")
-        elif is_elf():
-            vw.setMeta("Platform", "unknown")
-            vw.setMeta("Format", "elf")
-        else:
-            raise NotImplementedError("unsupported filetype")
-        
-        return vw
-        
-    viv_utils.idaloader.loadWorkspaceFromIdb = load_workspace_from_idb_hook
-
-    # Allow \r and \n in ASCII strings
-    if rb"\r" not in floss.strings.ASCII_BYTE:
-        floss.strings.ASCII_BYTE += rb"\r"
-
-    if rb"\n" not in floss.strings.ASCII_BYTE:
-        floss.strings.ASCII_BYTE += rb"\n"
-
-    floss.strings.ASCII_RE_4 = re.compile(rb"([%s]{%d,})" % (floss.strings.ASCII_BYTE, 4))
-    floss.strings.UNICODE_RE_4 = re.compile(rb"((?:[%s]\x00){%d,})" % (floss.strings.ASCII_BYTE, 4))
-
-    # Do not split strings by \r or \n
-    def get_referenced_strings_patch(vw, fva):
-        # modified from capa
-        f: viv_utils.Function = viv_utils.Function(vw, fva)
-        strings = set()
-        for bb in f.basic_blocks:
-            for insn in bb.instructions:
-                for i, oper in enumerate(insn.opers):
-                    if isinstance(oper, envi.archs.i386.disasm.i386ImmOper):
-                        v = oper.getOperValue(oper)
-                    elif isinstance(oper, envi.archs.i386.disasm.i386ImmMemOper):
-                        # like 0x10056CB4 in `lea eax, dword [0x10056CB4]`
-                        v = oper.imm
-                    elif isinstance(oper, envi.archs.i386.disasm.i386SibOper):
-                        # like 0x401000 in `mov eax, 0x401000[2 * ebx]`
-                        v = oper.imm
-                    elif isinstance(oper, envi.archs.amd64.disasm.Amd64RipRelOper):
-                        v = oper.getOperAddr(insn)
-                    else:
-                        continue
-
-                    for v in floss.utils.derefs(vw, v):
-                        try:
-                            s = floss.utils.read_string(vw, v)
-                        except ValueError:
-                            continue
-                        else:
-                            # Do not split strings by \r or \n
-                            strings.update([s.rstrip("\x00")])
-        return strings
-    
-    floss.utils.get_referenced_strings = get_referenced_strings_patch
-
-
-def hook_floss_comments():
-    # Hook floss.apply_stack_strings
-    apply_stack_strings_func = floss_ida_script.apply_stack_strings
-
-    def apply_stack_strings_hook(stack_strings, tight_strings, lvar_cmt = True, cmt = True) -> None:
-        apply_stack_strings_func(stack_strings, tight_strings, lvar_cmt, cmt)
-        strings = stack_strings + tight_strings
-
-        for s in strings:
-            if not s.string:
-                continue
-
-            add_pseudocode_comment(s.program_counter, s.string, prefix="[FLOSS]: ")
-
-    floss_ida_script.apply_stack_strings = apply_stack_strings_hook
-
-    # Hook floss.apply_decoded_strings
-    apply_decoded_strings_func = floss_ida_script.apply_decoded_strings
-
-    def apply_decoded_strings_hook(decoded_strings) -> None:
-        apply_decoded_strings_func(decoded_strings)
-
-        for ds in decoded_strings:
-            for ref_addr in find_references_to(ds.address):
-                try:
-                    var_name = get_name_for_address(ds.address, ref_addr)
-                except:
-                    var_name = "Decrypted"
-                add_pseudocode_comment(ref_addr, ds.string, prefix=f"[FLOSS] {var_name}: ")
-
-    floss_ida_script.apply_decoded_strings = apply_decoded_strings_hook
-
-    def undo():
-        floss_ida_script.apply_stack_strings = apply_stack_strings_func
-        floss_ida_script.apply_decoded_strings = apply_decoded_strings_func
-
-    return undo
 
 
 class DummyPlugin(ida_idaapi.plugin_t):
