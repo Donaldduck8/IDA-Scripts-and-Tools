@@ -276,7 +276,7 @@ class BetterAnnotatorPlugin(idaapi.plugin_t):
     comment = "BetterAnnotator"
     help = "BetterAnnotator"
     wanted_name = "BetterAnnotator"
-    wanted_hotkey = ""
+    wanted_hotkey = "Ctrl+Shift+A"
     dialog = None
 
     def init(self):
