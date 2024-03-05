@@ -2,14 +2,7 @@
 I'm an aspiring reverse engineer, so in my learning process I develop my own solutions to some of the problems I encounter. This repository is a place for me to share and maintain the things I make.
 
 ### Installation
-The recommended way to install these tools is to create hard links of ``donald_ida_utils.py`` and ``donald_ida_plugin.py`` in: ``IDA_HOME/plugins``.
-
-You will need to perform the following extra steps:
-* ``pip install flare-floss``
-* Download ``scripts/idaplugin.py`` from the [FLOSS](https://github.com/mandiant/flare-floss/tree/master/scripts) repository
-* Rename this file to ``floss_ida_script.py``
-* Place this file in ``IDA_HOME/plugins``
-
+The recommended way to install these tools is to create hard links of this repository's files in: ``IDA_HOME/plugins``.
 
 ### Synchronized Disassembly View 
 
