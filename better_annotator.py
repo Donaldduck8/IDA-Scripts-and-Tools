@@ -1,76 +1,177 @@
-from __future__ import print_function
 import idaapi
-import idc
-import idautils
 import ida_kernwin
 import donald_ida_utils
 
 import re
 import json
-import traceback
 
-from capstone import (
-    CS_ARCH_X86,
-    CS_MODE_16,
-    CS_MODE_32,
-    CS_MODE_64
-)
 from PyQt5 import QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 
-def get_selection():
-    start = idc.read_selection_start()
-    end = idc.read_selection_end()
-    if idaapi.BADADDR in (start, end):
-        ea = idc.here()
-        start = idaapi.get_item_head(ea)
-        end = idaapi.get_item_end(ea)
-    return start, end
+SYMBOLS_TO_WORDS = {
+    # ' ': '_',
+    '!': 'exclamation_mark',
+    '"': 'double_quote',
+    '#': 'hash',
+    '$': 'dollar',
+    '%': 'percent',
+    '&': 'ampersand',
+    # "'": 'quote',
+    '(': 'left_paren',
+    ')': 'right_paren',
+    '*': 'star',
+    '+': 'plus',
+    ',': 'comma',
+    '-': 'dash',
+    '.': 'dot',
+    '/': 'slash',
+    ':': 'colon',
+    ';': 'semicolon',
+    '<': 'less_than',
+    '=': 'equals',
+    '>': 'greater_than',
+    '?': 'question_mark',
+    '@': 'at',
+    '[': 'left_bracket',
+    '\\': 'backslash',
+    ']': 'right_bracket',
+    '^': 'caret',
+    # '_': 'underscore',
+    '`': 'backtick',
+    '{': 'left_brace',
+    '|': 'vertical_bar',
+    '}': 'right_brace',
+    '~': 'tilde'
+}
 
 
-MAX_STRING_LENGTH = 35
+class IDAStringFormatter:
+    def __init__(
+        self,
+        data: dict,
+        mode: str,
+        maximum_string_length: int = 35,
+        keep_original_capitalization: bool = False,
+        transliterate_symbols: bool = False,
+        comment_prefix: str = "[AUTO]",
+    ):
+        self.data = data
+        self.mode = mode
+        self.maximum_string_length = maximum_string_length
+        self.keep_original_capitalization = keep_original_capitalization
+        self.transliterate_symbols = transliterate_symbols
+        self.comment_prefix = comment_prefix
 
-def slugify(input_string):
-    # Convert to lowercase
-    slug = input_string.lower()
-    # Replace all groups of non-alphanumeric characters with a single hyphen
-    slug = re.sub(r'[^\w]+', '-', slug)
-    # Remove leading, trailing, and multiple consecutive hyphens
-    slug = re.sub(r'-+', '-', slug).strip('-')
-    return slug
+    def transliterate_string(self, input_string: str) -> str:
+        # Replace all non-alphanumeric characters with their word equivalent
+        for symbol, word in SYMBOLS_TO_WORDS.items():
+            input_string = input_string.replace(symbol, f"_{word}_")
 
-def sanitize_enum_value(original):
-    return slugify(original).replace("-", "_")
+        return input_string
 
-def fix_duplicates(values):
-    hm = []
-    values_new = []
+    def sanitize_string(self, input_string: str) -> str:
+        # Replace all non-alphanumeric characters with an underscore
+        input_string = re.sub(r"[^\w]+", "_", input_string)
 
-    for value in values:
-        # If value exists already
-        while value in hm:
-            value = value + "_"
+        # Remove leading, trailing, and multiple consecutive underscores
+        input_string = re.sub(r"_+", "_", input_string).strip("_")
 
-        hm.append(value)
+        return input_string
 
-        values_new.append(value)
+    def fix_duplicate_values(self, data: dict) -> dict:
+        seen_values = []
+        new_data = {}
 
-    return values_new
+        for key, value in data.items():
+            if value in seen_values:
+                duplicate_index = 2
 
-def format_enum(enum_name, enum_data):
-    sanitized_values = [sanitize_enum_value(value) for value in enum_data.values()]
-    trimmed_values = [x[:MAX_STRING_LENGTH] for x in sanitized_values]
-    deduplicated_values = fix_duplicates(trimmed_values)
+                value_new = value + f"_x{duplicate_index}"
 
-    enum_s = f'enum {enum_name} {{\n'
-    for key, value in zip(enum_data.keys(), deduplicated_values):
-        enum_s += f'str_{value} = {hex(key)},\n'
+                while value_new in seen_values:
+                    duplicate_index += 1
+                    value_new = value + f"_x{duplicate_index}"
 
-    enum_s += "};"
+                value = value_new
 
-    return enum_s, dict(zip(enum_data.keys(), deduplicated_values))
+            seen_values.append(value)
+            new_data[key] = value
 
+        return new_data
+
+    def format_data(self):
+        if self.mode == "enum":
+            return self.format_enum()
+        elif self.mode == "globals":
+            return self.format_globals()
+        elif self.mode == "comments":
+            return self.format_comments()
+        else:
+            return None
+
+    def format_enum(self):
+        return self.format_tokens(enum=True)
+
+    def format_globals(self):
+        return self.format_tokens(enum=False)
+
+    def format_tokens(self, enum: bool = False):
+        data = self.data
+
+        # Transliteration
+        if self.transliterate_symbols:
+            data = {
+                k: self.transliterate_string(v) for k, v in data.items()
+            }
+
+        # Sanitize all strings
+        data = {
+            k: self.sanitize_string(v) for k, v in data.items()
+        }
+
+        # Fix all duplicate values
+        data = self.fix_duplicate_values(data)
+
+        # Truncate all strings to the maximum length
+        data = {
+            k: v[:self.maximum_string_length] for k, v in data.items()
+        }
+
+        # Convert all strings to lower-case
+        if not self.keep_original_capitalization:
+            if enum:
+                data = {
+                    k: v.lower() for k, v in data.items()
+                }
+            else:
+                data = {
+                    k: v.upper() for k, v in data.items()
+                }
+
+        return data
+
+    def format_comments(self):
+        data = self.data
+
+        # Apply the comment prefix to all values:
+        if self.comment_prefix is not None and self.comment_prefix != "":
+            data = {
+                k: f"{self.comment_prefix} {v}" for k, v in data.items()
+            }
+
+        return data
+
+    def format_enum_string(self):
+        data = self.format_enum()
+
+        enum_s = "enum enum_name {\n"
+        for key, value in data.items():
+            enum_s += f"str_{value} = {hex(key)},\n"
+
+        enum_s += "};"
+
+        return enum_s
 
 
 class BetterAnnotatorDialog(QtWidgets.QDialog):
@@ -82,17 +183,19 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         self.mode = "comments"
         self.log_widget = None
         self.data = None
-        self.data_orig = None
+        self.max_string_length = 35
+        self.keep_original_capitalization = False
+        self.transliterate_symbols = False
+        self.comment_prefix = "[AUTO]"
         self.populate_form()
 
     def populate_form(self):
-        self.setWindowTitle('Better Annotator')
+        self.setWindowTitle("Better Annotator")
         self.resize(800, 600)
         self.layout = QtWidgets.QVBoxLayout(self)
         self.top_layout = QtWidgets.QHBoxLayout()
         self.bottom_layout = QtWidgets.QHBoxLayout()
         self.bottom_layout.setAlignment(Qt.AlignRight | Qt.AlignBottom)
-        # layout.addStretch()
 
         self.log_widget = QtWidgets.QLabel("Paste your generated JSON data here!")
         self.layout.addWidget(self.log_widget)
@@ -104,7 +207,7 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         font.setPointSize(10)
         self.text_edit.setFont(font)
         metrics = QtGui.QFontMetrics(font)
-        self.text_edit.setTabStopWidth(4 * metrics.width(' '))
+        self.text_edit.setTabStopWidth(4 * metrics.width(" "))
         self.text_edit.insertPlainText(self.user_input)
         self.layout.addWidget(self.text_edit)
 
@@ -119,7 +222,7 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         self.layout.addWidget(self.table_widget)
 
         # Radio buttons group
-        self.radio_group_box = QtWidgets.QGroupBox("Options")
+        self.radio_group_box = QtWidgets.QGroupBox("Mode")
         self.radio_layout = QtWidgets.QHBoxLayout()
         self.radio_globals = QtWidgets.QRadioButton("Globals")
         self.radio_enum = QtWidgets.QRadioButton("Enum")
@@ -138,6 +241,42 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         # Set "Comments" radio button checked by default
         self.radio_comments.setChecked(True)
 
+        # Options group
+        self.options_group_box = QtWidgets.QGroupBox("Options")
+        self.options_layout = QtWidgets.QHBoxLayout()
+
+        # Max string length
+        self.max_length_label = QtWidgets.QLabel("Maximum string length:")
+        self.max_length_spinbox = QtWidgets.QSpinBox()
+        self.max_length_spinbox.setMinimum(1)
+        self.max_length_spinbox.setMaximum(10000)
+        self.max_length_spinbox.setValue(35)  # Default value
+        self.max_length_spinbox.valueChanged.connect(self.on_max_string_length_changed)
+
+        self.options_layout.addWidget(self.max_length_label)
+        self.options_layout.addWidget(self.max_length_spinbox)
+
+        # Checkbox for keeping original capitalization
+        self.keep_capitalization_checkbox = QtWidgets.QCheckBox("Keep original capitalization")
+        self.keep_capitalization_checkbox.stateChanged.connect(self.on_keep_capitalization_changed)
+        self.options_layout.addWidget(self.keep_capitalization_checkbox)
+
+        # Checkbox for transliterating symbols
+        self.transliterate_symbols_checkbox = QtWidgets.QCheckBox("Transliterate symbols")
+        self.transliterate_symbols_checkbox.stateChanged.connect(self.on_transliterate_symbols_changed)
+        self.options_layout.addWidget(self.transliterate_symbols_checkbox)
+
+        # Comment prefix text input
+        self.comment_prefix_label = QtWidgets.QLabel("Comment prefix:")
+        self.comment_prefix_lineedit = QtWidgets.QLineEdit()
+        self.comment_prefix_lineedit.setText("[AUTO]")
+        self.comment_prefix_lineedit.textChanged.connect(self.on_comment_prefix_changed)
+        self.options_layout.addWidget(self.comment_prefix_label)
+        self.options_layout.addWidget(self.comment_prefix_lineedit)
+
+        self.options_group_box.setLayout(self.options_layout)
+        self.layout.addWidget(self.options_group_box)
+
         self.ok_btn = QtWidgets.QPushButton("OK")
         self.ok_btn.setFixedWidth(100)
         self.ok_btn.clicked.connect(self.ok_btn_clicked)
@@ -145,6 +284,26 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
 
         self.layout.addLayout(self.top_layout)
         self.layout.addLayout(self.bottom_layout)
+
+        self.set_table()
+
+    def on_max_string_length_changed(self):
+        self.max_string_length = self.max_length_spinbox.value()
+
+        self.set_table()
+
+    def on_keep_capitalization_changed(self):
+        self.keep_original_capitalization = self.keep_capitalization_checkbox.isChecked()
+
+        self.set_table()
+
+    def on_transliterate_symbols_changed(self):
+        self.transliterate_symbols = self.transliterate_symbols_checkbox.isChecked()
+
+        self.set_table()
+
+    def on_comment_prefix_changed(self):
+        self.comment_prefix = self.comment_prefix_lineedit.text()
 
         self.set_table()
 
@@ -156,64 +315,69 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         text = self.text_edit.toPlainText()  # Get current text from QTextEdit
 
         self.data = None
-        self.data_orig = None
         self.table_widget.setRowCount(0)  # Clear existing rows
 
         if len(text) == 0:
-            self.log_widget.setText(f"Paste your generated JSON data here!")
+            self.log_widget.setText("Paste your generated JSON data here!")
 
-        try:  
+        try:
             # Attempt to parse the text as JSON
             data = json.loads(text)
             if not isinstance(data, dict):
-                self.log_widget.setText("JSON is not an object")
+                self.log_widget.setText("Data is not a dictionary!")
                 return
-            
-            data_new = {}
-            
+
+            data_normalized = {}
+
             for key, value in data.items():
                 # Ensure every key is a number and every value is a string
-                if isinstance(key, int) or (isinstance(key, str) and key.isdigit()) or key.startswith("0x"):
+                if (
+                    isinstance(key, int)
+                    or (isinstance(key, str) and key.isdigit())
+                    or key.startswith("0x")
+                ):
                     if isinstance(value, str):
                         if key.startswith("0x"):
-                            data_new[int(key, 16)] = value
+                            data_normalized[int(key, 16)] = value
                         else:
-                            data_new[int(key)] = value
+                            data_normalized[int(key)] = value
                     else:
-                        self.log_widget.setText(f"Value for key {key} is not a string")
+                        self.log_widget.setText(f"Value for key {key} is not a string!")
                         return
                 else:
-                    self.log_widge.setText(f"Key {key} is not a number")
+                    self.log_widget.setText(f"Key {key} is not a number!")
                     return
 
-            data = data_new
-            self.data_orig = data
-            
-            if self.mode == "enum" or self.mode == "globals":
-                # Need to slugify and de-duplicate
-                enum_s, dedup_data = format_enum("test", data)
+            data = data_normalized
 
-                data = dedup_data
+            self.formatter = IDAStringFormatter(
+                data,
+                self.mode,
+                self.max_string_length,
+                self.keep_original_capitalization,
+                self.transliterate_symbols,
+                self.comment_prefix,
+            )
 
-            if self.mode == "globals":
-                data = {k:v.upper() for k,v in data.items()}
+            data = self.formatter.format_data()
 
-            if self.mode == "comments":
-                data  = {k:"[AUTO] " + v for k,v in data.items()}
-
-            for key,value in data.items():
+            for key, value in data.items():
                 row_position = self.table_widget.rowCount()
                 self.table_widget.insertRow(row_position)
-                self.table_widget.setItem(row_position, 0, QtWidgets.QTableWidgetItem(hex(key)))
-                self.table_widget.setItem(row_position, 1, QtWidgets.QTableWidgetItem(value))
+                self.table_widget.setItem(
+                    row_position, 0, QtWidgets.QTableWidgetItem(hex(key))
+                )
+                self.table_widget.setItem(
+                    row_position, 1, QtWidgets.QTableWidgetItem(value)
+                )
 
-            self.log_widget.setText(f"Parsed successfully!")
+            self.log_widget.setText("Parsed successfully!")
 
             self.data = data
 
         except json.JSONDecodeError as e:
             self.log_widget.setText(f"Failed to parse JSON, {e.msg}")
-            self.table_widget.setRowCount(0)        
+            self.table_widget.setRowCount(0)
 
     def radio_button_clicked(self):
         if self.radio_globals.isChecked():
@@ -226,7 +390,7 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         self.set_table()
 
     def ok_btn_clicked(self):
-        if self.data == None:
+        if self.data is None:
             self.close()
             return
 
@@ -237,20 +401,15 @@ class BetterAnnotatorDialog(QtWidgets.QDialog):
         elif self.mode == "globals":
             for addr, value in self.data.items():
                 donald_ida_utils.define_and_rename_global(addr, value)
-                donald_ida_utils.add_disassembly_comment(addr, self.data_orig[addr])
+                donald_ida_utils.add_disassembly_comment(addr, value)
 
         elif self.mode == "enum":
-            enum_name = show_text_input_dialog()
-
-            if enum_name == None:
-                return
-            
-            enum_s, _ = format_enum(enum_name, self.data)
+            enum_s = self.formatter.format_enum_string()
 
             print(enum_s)
         else:
             return
-        
+
         self.close()
 
 
@@ -268,7 +427,7 @@ class TextInputForm(ida_kernwin.Form):
     def __init__(self):
         self.inp_str = ida_kernwin.Form.StringInput()
         form_str = "STARTITEM 0\nEnum Name\n\n  <##Enter the desired name:{inp_str}>"
-        ida_kernwin.Form.__init__(self, form_str, {'inp_str': self.inp_str})
+        ida_kernwin.Form.__init__(self, form_str, {"inp_str": self.inp_str})
 
 
 class BetterAnnotatorPlugin(idaapi.plugin_t):
@@ -280,7 +439,7 @@ class BetterAnnotatorPlugin(idaapi.plugin_t):
     dialog = None
 
     def init(self):
-        print('BetterAnnotator :: Plugin Started')
+        print("BetterAnnotator :: Plugin Started")
         return idaapi.PLUGIN_KEEP
 
     def term(self):
@@ -293,19 +452,22 @@ class BetterAnnotatorPlugin(idaapi.plugin_t):
 
 def generic_handler(callback):
     class Handler(idaapi.action_handler_t):
-            def __init__(self):
-                idaapi.action_handler_t.__init__(self)
+        def __init__(self):
+            idaapi.action_handler_t.__init__(self)
 
-            def activate(self, ctx):
-                callback()
-                return 1
+        def activate(self, ctx):
+            callback()
+            return 1
 
-            def update(self, ctx):
-                return idaapi.AST_ENABLE_ALWAYS
+        def update(self, ctx):
+            return idaapi.AST_ENABLE_ALWAYS
+
     return Handler()
 
 
 plugin = BetterAnnotatorPlugin()
+
+
 def PLUGIN_ENTRY():
     global plugin
     return plugin
