@@ -148,6 +148,11 @@ class IDAStringFormatter:
                 data = {
                     k: v.upper() for k, v in data.items()
                 }
+                
+        # If string starts with a number, add "str_" prefix
+        data = {
+            k: f"str_{v}" if v[0].isdigit() else v for k, v in data.items()
+        }
 
         return data
 
